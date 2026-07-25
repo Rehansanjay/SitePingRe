@@ -8,6 +8,35 @@ import { generateXPath } from "./xpath.js";
 export const ANCHOR_KEY_ATTR = "data-feedback-anchor";
 
 /**
+ * Like `element.closest()`, but pierces shadow boundaries upwards.
+ */
+export function closestCrossShadow(element: Element | null, selector: string): Element | null {
+  let current = element;
+  while (current) {
+    const match = current.closest(selector);
+    if (match) return match;
+    const root = current.getRootNode();
+    if (root instanceof ShadowRoot) {
+      current = root.host;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+/**
+ * Like `element.parentElement`, but pierces shadow boundaries upwards.
+ */
+function parentElementCrossShadow(element: Element | null): Element | null {
+  if (!element) return null;
+  if (element.parentElement) return element.parentElement;
+  const root = element.getRootNode();
+  if (root instanceof ShadowRoot) return root.host;
+  return null;
+}
+
+/**
  * Generate a multi-selector anchor for a DOM element.
  *
  * Resolution priority (used by `resolveAnchor`):
@@ -19,16 +48,31 @@ export const ANCHOR_KEY_ATTR = "data-feedback-anchor";
  * 5. Smart scan (fingerprint + text + prefix/suffix + neighbor)
  */
 export function generateAnchor(element: Element): AnchorData {
-  const cssSelector = finder(element, {
-    // Filter out CSS-in-JS hashed class names
-    className: (name: string) => !/^(css|sc|emotion|styled)-/.test(name) && !/^[a-z]{1,3}[A-Za-z0-9]{4,8}$/.test(name),
-    // Prefer stable attributes
-    attr: (name: string) => ["data-testid", "data-id", "role", "aria-label"].includes(name),
-    // Exclude framework-generated dynamic IDs
-    idName: (name: string) => !name.startsWith("radix-") && !/^:r[0-9]+:$/.test(name),
-    seedMinLength: 3,
-    optimizedMinLength: 2,
-  });
+  const selectors: string[] = [];
+  let current: Element | null = element;
+  while (current) {
+    const root = current.getRootNode();
+    selectors.unshift(
+      finder(current, {
+        root: root as Element,
+        // Filter out CSS-in-JS hashed class names
+        className: (name: string) =>
+          !/^(css|sc|emotion|styled)-/.test(name) && !/^[a-z]{1,3}[A-Za-z0-9]{4,8}$/.test(name),
+        // Prefer stable attributes
+        attr: (name: string) => ["data-testid", "data-id", "role", "aria-label"].includes(name),
+        // Exclude framework-generated dynamic IDs
+        idName: (name: string) => !name.startsWith("radix-") && !/^:r[0-9]+:$/.test(name),
+        seedMinLength: 3,
+        optimizedMinLength: 2,
+      }),
+    );
+    if (root instanceof ShadowRoot) {
+      current = root.host;
+    } else {
+      break;
+    }
+  }
+  const cssSelector = selectors.join(" >>> ");
 
   const xpath = generateXPath(element);
 
@@ -40,7 +84,7 @@ export function generateAnchor(element: Element): AnchorData {
   const fingerprint = generateFingerprint(element);
   const neighbor = neighborText(element);
 
-  const semanticAncestor = element.closest(`[${ANCHOR_KEY_ATTR}]`);
+  const semanticAncestor = closestCrossShadow(element, `[${ANCHOR_KEY_ATTR}]`);
   const anchorKey = semanticAncestor?.getAttribute(ANCHOR_KEY_ATTR) ?? null;
 
   return {
@@ -78,7 +122,13 @@ export function findAnchorElement(rect: DOMRect, root: Element = document.docume
   const centerX = rect.x + rect.width / 2;
   const centerY = rect.y + rect.height / 2;
 
-  const elementAtCenter = document.elementFromPoint(centerX, centerY);
+  let elementAtCenter = document.elementFromPoint(centerX, centerY);
+  while (elementAtCenter && elementAtCenter.shadowRoot) {
+    const inner = elementAtCenter.shadowRoot.elementFromPoint(centerX, centerY);
+    if (!inner || inner === elementAtCenter) break;
+    elementAtCenter = inner;
+  }
+
   if (!elementAtCenter || elementAtCenter === root) return document.body;
 
   // Pass 1 — semantic anchor (host-controlled, most stable)
@@ -87,14 +137,14 @@ export function findAnchorElement(rect: DOMRect, root: Element = document.docume
     if (current.hasAttribute(ANCHOR_KEY_ATTR) && containsRect(current, rect)) {
       return current;
     }
-    current = current.parentElement;
+    current = parentElementCrossShadow(current);
   }
 
   // Pass 2 — original behavior: smallest ancestor that contains the rect
   current = elementAtCenter;
   while (current && current !== document.body) {
     if (containsRect(current, rect)) return current;
-    current = current.parentElement;
+    current = parentElementCrossShadow(current);
   }
 
   return document.body;

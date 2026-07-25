@@ -231,4 +231,59 @@ describe("generateAnchor", () => {
       expect(typeof anchor.neighborText).toBe("string");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Shadow DOM support
+  // -------------------------------------------------------------------------
+
+  describe("Shadow DOM support", () => {
+    it("builds a shadow-piercing cssSelector path using >>>", () => {
+      const host = document.createElement("div");
+      host.id = "host1";
+      document.body.appendChild(host);
+
+      const shadow = host.attachShadow({ mode: "open" });
+      const target = document.createElement("span");
+      target.id = "target1";
+      shadow.appendChild(target);
+
+      const anchor = generateAnchor(target);
+      expect(anchor.cssSelector).toContain(" >>> ");
+      expect(anchor.cssSelector.split(" >>> ").length).toBe(2);
+      expect(anchor.cssSelector).toMatch(/#host1\s*>>>\s*#target1/);
+    });
+
+    it("builds a multi-level shadow-piercing cssSelector path", () => {
+      const host1 = document.createElement("div");
+      host1.id = "host1";
+      document.body.appendChild(host1);
+
+      const shadow1 = host1.attachShadow({ mode: "open" });
+      const host2 = document.createElement("section");
+      host2.className = "inner-host";
+      shadow1.appendChild(host2);
+
+      const shadow2 = host2.attachShadow({ mode: "open" });
+      const target = document.createElement("button");
+      target.id = "deep-target";
+      shadow2.appendChild(target);
+
+      const anchor = generateAnchor(target);
+      expect(anchor.cssSelector.split(" >>> ").length).toBe(3);
+      expect(anchor.cssSelector).toMatch(/#host1\s*>>>\s*\.inner-host\s*>>>\s*#deep-target/);
+    });
+
+    it("captures semantic anchorKey across a shadow boundary", () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-feedback-anchor", "global-section");
+      document.body.appendChild(host);
+
+      const shadow = host.attachShadow({ mode: "open" });
+      const target = document.createElement("p");
+      shadow.appendChild(target);
+
+      const anchor = generateAnchor(target);
+      expect(anchor.anchorKey).toBe("global-section");
+    });
+  });
 });

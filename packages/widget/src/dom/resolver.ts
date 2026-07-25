@@ -278,6 +278,69 @@ export function resolveAnchor(anchor: AnchorData, options?: ResolveOptions): Anc
 }
 
 /**
+ * Recursively queries a selector through the root element and all open shadow roots
+ * attached to its descendants.
+ */
+function deepQuerySelectorAll(selector: string, root: Document | Element | ShadowRoot = document): Element[] {
+  const results: Element[] = [];
+
+  // This will throw if the selector is invalid, bubbling up to the caller
+  const matches = root.querySelectorAll(selector);
+  for (let i = 0; i < matches.length; i++) {
+    const el = matches[i];
+    if (el) results.push(el);
+  }
+
+  try {
+    const all = root.querySelectorAll("*");
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (el?.shadowRoot) {
+        results.push(...deepQuerySelectorAll(selector, el.shadowRoot));
+      }
+    }
+  } catch {
+    // Ignore errors traversing shadow roots
+  }
+
+  return results;
+}
+
+/**
+ * Resolves a shadow-piercing CSS selector (e.g. `my-app >>> .target`).
+ */
+function resolveShadowPath(path: string): Element[] {
+  const parts = path.split(" >>> ");
+  let currentRoots: (Document | ShadowRoot | Element)[] = [document];
+  let matches: Element[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const selector = parts[i];
+    if (!selector) continue;
+
+    const nextRoots: (Document | ShadowRoot | Element)[] = [];
+    matches = [];
+
+    for (const root of currentRoots) {
+      try {
+        const els = root.querySelectorAll(selector);
+        for (let j = 0; j < els.length; j++) {
+          const el = els[j];
+          if (el) {
+            matches.push(el);
+            if (el.shadowRoot) nextRoots.push(el.shadowRoot);
+          }
+        }
+      } catch {
+        // Invalid selector, skip
+      }
+    }
+    currentRoots = nextRoots;
+  }
+  return matches;
+}
+
+/**
  * Collect candidates from all selector strategies, ALL matches per strategy
  * (bounded), in priority order. An element found by several strategies keeps
  * the highest-priority one (first insertion wins).
@@ -296,7 +359,7 @@ function gatherSelectorCandidates(anchor: AnchorData): Map<Element, ResolutionSt
   if (anchor.anchorKey) {
     const escaped = anchor.anchorKey.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     try {
-      const matches = document.querySelectorAll(`[${ANCHOR_KEY_ATTR}="${escaped}"]`);
+      const matches = deepQuerySelectorAll(`[${ANCHOR_KEY_ATTR}="${escaped}"]`);
       for (let i = 0; i < Math.min(matches.length, MAX_PER_STRATEGY); i++) {
         add(matches[i] ?? null, "anchorKey", false);
       }
@@ -312,7 +375,7 @@ function gatherSelectorCandidates(anchor: AnchorData): Map<Element, ResolutionSt
   if (anchor.elementId) {
     const escaped = anchor.elementId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     try {
-      const matches = document.querySelectorAll(`[id="${escaped}"]`);
+      const matches = deepQuerySelectorAll(`[id="${escaped}"]`);
       for (let i = 0; i < Math.min(matches.length, MAX_PER_STRATEGY); i++) {
         add(matches[i] ?? null, "id", true);
       }
@@ -323,7 +386,7 @@ function gatherSelectorCandidates(anchor: AnchorData): Map<Element, ResolutionSt
 
   // CSS selector
   try {
-    const matches = document.querySelectorAll(anchor.cssSelector);
+    const matches = resolveShadowPath(anchor.cssSelector);
     for (let i = 0; i < Math.min(matches.length, MAX_PER_STRATEGY); i++) {
       add(matches[i] ?? null, "css", true);
     }
@@ -358,9 +421,9 @@ function gatherSelectorCandidates(anchor: AnchorData): Map<Element, ResolutionSt
 function sweepScanCandidates(signals: AnchorSignals, pool: Map<Element, ResolutionStrategy>): Element[] {
   const tag = signals.tag.toLowerCase();
   if (!tag) return [];
-  let candidates: NodeListOf<Element>;
+  let candidates: Element[];
   try {
-    candidates = document.querySelectorAll(tag);
+    candidates = deepQuerySelectorAll(tag);
   } catch {
     return [];
   }
